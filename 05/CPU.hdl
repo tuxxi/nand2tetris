@@ -1,0 +1,111 @@
+// This file is part of www.nand2tetris.org
+// and the book "The Elements of Computing Systems"
+// by Nisan and Schocken, MIT Press.
+// File name: projects/5/CPU.hdl
+/**
+ * The Hack Central Processing unit (CPU).
+ * Parses the binary code in the instruction input and executes it according to the
+ * Hack machine language specification. In the case of a C-instruction, computes the
+ * function specified by the instruction. If the instruction specifies to read a memory
+ * value, the inM input is expected to contain this value. If the instruction specifies
+ * to write a value to the memory, sets the outM output to this value, sets the addressM
+ * output to the target address, and asserts the writeM output (when writeM = 0, any
+ * value may appear in outM).
+ * If the reset input is 0, computes the address of the next instruction and sets the
+ * pc output to that value. If the reset input is 1, sets pc to 0.
+ * Note: The outM and writeM outputs are combinational: they are affected by the
+ * instruction's execution during the current cycle. The addressM and pc outputs are
+ * clocked: although they are affected by the instruction's execution, they commit to
+ * their new values only in the next cycle.
+ */
+CHIP CPU {
+    IN  inM[16],         // M value input  (M = contents of RAM[A])
+        instruction[16], // Instruction for execution
+        reset;           // Signals whether to re-start the current
+                         // program (reset==1) or continue executing
+                         // the current program (reset==0).
+
+    OUT outM[16],        // M value output
+        writeM,          // Write to M?
+        addressM[15],    // Address in data memory (of M)
+        pc[15];          // address of next instruction
+
+    PARTS:
+
+    // Decode the instruction
+    // instruction is A-instr if instruction[15] == 0
+    // otherwise, it is C-instr.
+    Not(in=instruction[15], out=aInstr);
+    Not(in=aInstr, out=cInstr);
+
+    // registers.
+    Mux16(a=aluOut, b=instruction, sel=aInstr, out=inA);
+    Or(a=aInstr, b=loadAFromALU, out=loadA);
+    ARegister(in=inA, load=loadA, out=regA, out[0..14]=addressM);
+
+    DRegister(in=aluOut, load=loadDFromALU, out=regD);
+
+    // C instr decode
+    /// 111a cccc ccdd djjj
+
+    // A is selected when instr[12] == 0, otherwise M.
+    Mux16(a=regA, b=inM, sel=instruction[12], out=aOrM);
+    // control signals to ALU:
+    //      c1 c2 c3 c4 c5 c6
+    // 111a c  c  c  c  c  c   dd djjj
+
+    ALU(x=regD, y=aOrM,
+        zx=instruction[11],
+        nx=instruction[10],
+        zy=instruction[9],
+        ny=instruction[8],
+        f= instruction[7],
+        no=instruction[6],
+        out=aluOut,
+        // Apparently, any value can appear in outM when writeM is not set.
+        // It seems in practice that the comparsion file necessitates it to be the ALU result...
+        out=outM,
+        zr=isZero,
+        ng=isNegative);
+
+    // Select destination(s) based on instruction D bits
+    //writeM=instruction[3]
+    And(a=instruction[3],b=cInstr,out=writeM);
+    //loadDFromALU=instruction[4]
+    And(a=instruction[4],b=cInstr,out=loadDFromALU);
+    //loadAFromALU=instruction[5]
+    And(a=instruction[5],b=cInstr,out=loadAFromALU);
+
+    // Select jump based on instruction J bits.
+    // We use a Mux8Way here to select the jump flag based on the instr.
+    // 0 0 0 => null (no jump) a
+    // 0 0 1 => JGT  (> 0)     b
+    // 0 1 0 => JEQ  (==0)     c
+    // 0 1 1 => JGE  (>=0)     d
+    // 1 0 0 => JLT  (< 0)     e
+    // 1 0 1 => JNE  (!=0)     f
+    // 1 1 0 => JLE  (<=0)     g
+    // 1 1 1 => JMP (true)     h
+    Not(in=isNegative, out=notNegative);
+    Not(in=isZero, out=notZero);
+    And(a=notZero, b=notNegative, out=JGT);
+    Or(a=notNegative,b=isZero, out=JGE);
+    Or(a=isNegative,b=isZero, out=JLE);
+    Mux8Way16(
+        a=false,
+        b[0]=JGT,
+        c[0]=isZero,
+        d[0]=JGE,
+        e[0]=isNegative,
+        f[0]=notZero,
+        g[0]=JLE,
+        h=true,
+        sel=instruction[0..2],
+        out[0]=jmpSet);
+
+    // PC register
+    And(a=jmpSet, b=cInstr, out=shouldJmp);
+    Or(a=reset,b=shouldJmp, out=notIncPc); // !reset && !jmp == inc
+    Not(in=notIncPc, out=incPc);
+    PC(in=regA, reset=reset, load=shouldJmp, inc=incPc, out[0..14]=pc);
+}
